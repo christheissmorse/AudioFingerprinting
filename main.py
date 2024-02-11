@@ -18,11 +18,14 @@ from IPython.display import Audio
 from scipy.ndimage.filters import maximum_filter
 
 
-# x = signal, w = window, h = hop length
+# Short-Time Fourier Transform
+# Inputs: x = signal, w = window, h = hop length
+# Output: STFT of the signal (cols are frequency contents from standard FFT)
 def STFT(x, w, h):
   max_hops = (len(x) - len(w)) // h
   X = np.zeros(((len(w) // 2) + 1, max_hops), dtype=np.complex_)
 
+  # hop window across signal
   for n in range(0, max_hops):
     # clip of signal x; start at nth hop to the end of the window
     x_clip = x[n*h : n*h + len(w)]
@@ -30,17 +33,21 @@ def STFT(x, w, h):
     # plug output into n'th column of 2D output matrix
     col = np.fft.rfft(x_clip * w)
     X[:, n] = col
+
   return X
 
-
+# generate spectrogram for a single audio file
 def generateSpectrogram(filepath, op = False):
+  # load mp3 file into numpy array
   raw_signal = wave.open(filepath)
   nframes = raw_signal.getnframes()
   signal = np.frombuffer(raw_signal.readframes(nframes), dtype = np.int16)
   signal = signal.astype(float)
   framerate = raw_signal.getframerate()
 
+  # use STFT to generate STFT from audio signal
   X = STFT(signal, np.hanning(756), 378)
+  # square magnitude of signal, on log scale for better visualization
   Y = np.abs(np.log(X)) ** 2
 
   #Y = np.flipud(Y)
@@ -55,7 +62,7 @@ def generateSpectrogram(filepath, op = False):
 
   return Y
 
-
+# generate and save spectrograms for all files in directory
 def generateAllSpectrograms():
   for file in os.listdir("./audio_files/"):
       print(file)
@@ -69,19 +76,21 @@ def generateAllSpectrograms():
           im.save("./images/" + file[:-8] + ".png")
 
 
-
+# extract keypoints from data, via:
+# 1) max filter, 2) noise removal, 3) preserve strongest max keypoints
 def extractKeypoints(data, bin_size, amp_thresh):
   detected_peaks = maximum_filter(data, size=bin_size)
   detected_peaks = np.where(detected_peaks == data, detected_peaks, 0)
   detected_peaks = np.where(detected_peaks < amp_thresh, 0, detected_peaks)
 
+  # extract all of the peaks
+  coords = np.argwhere(detected_peaks!=0)
+
   # imm = Image.fromarray(detected_peaks).convert('L')
   # imm.show()
 
-  coords = np.argwhere(detected_peaks!=0)
-  f = coords[:,0]
-  t = coords[:,1]
-
+  # f = coords[:,0]
+  # t = coords[:,1]
   # fig, ax = plt.subplots()
   # ax.imshow(data)
   # ax.scatter(t, f, color='orange', s = 6)
@@ -95,38 +104,40 @@ def extractKeypoints(data, bin_size, amp_thresh):
   return coords
 
 
+# Note: max_fingerprint_size ranges from [2, 10]
+# Output: Hashset of all frequencies and time differences
 def extractFingerprint(data, coords, max_fingerprint_size):
   #fig, ax = plt.subplots()
   hashes = {}
-  neighbors = None
-  distances = None
-  indicies = None
 
-  try:
-    neighbors = NearestNeighbors(n_neighbors = 10).fit(coords)
-    distances, indicies = neighbors.kneighbors(coords)
-  except:
-    neighbors = NearestNeighbors(n_neighbors = 2).fit(coords)
-    distances, indicies = neighbors.kneighbors(coords)
-  
-  for idxs in indicies:
-    base_f = coords[idxs[0]][0]
-    base_t = coords[idxs[0]][1]
+  # compute nearest neighbor sets from keypoint map
+  neighbors = NearestNeighbors(n_neighbors = 10).fit(coords)
+  distances, neighborsets = neighbors.kneighbors(coords)
+
+  # for each base node..
+  for n_list in neighborsets:
+    # extract base node frequency and time
+    base_f = coords[n_list[0]][0]
+    base_t = coords[n_list[0]][1]
     count = 0
 
     ids = []
-    # returns base node and neighbors, so iterating over all the neighboring nodes here
-    for i in range(1, len(idxs)):
-      neighbor_f = coords[idxs[i]][0]
-      neighbor_t = coords[idxs[i]][1]
+    # Iterate over all the neighboring nodes by continuing through n_list
+    for i in range(1, len(n_list)):
+      # get frequency and time of neighboring node
+      neighbor_f = coords[n_list[i]][0]
+      neighbor_t = coords[n_list[i]][1]
 
       # compute time offset between base node and neighbors; keep only if in positive direction
       d_t = (neighbor_t - base_t)
       if d_t > 0:
+        # save neighbor via frequency and time difference hash
         neighbor_id = "f" + str(neighbor_f) + "_" + "dt" + str(d_t)
         ids.append(neighbor_id)
         #plt.plot([base_t, neighbor_t], [base_f, neighbor_f], 'o', c = 'yellow', mfc = 'orange', mec = 'orange', linestyle="--", markersize = 3)
         count += 1
+      
+      # if fingerprint size is reached, add base node and neighbor hashes to dictionary
       if count == max_fingerprint_size:
         ids.sort()
         s1 = "f" + str(base_f) + ";"
@@ -143,7 +154,7 @@ def extractFingerprint(data, coords, max_fingerprint_size):
   return hashes
 
 
-
+# Constructs a database of fingerprinted songs from all images in directory, and pickles them
 def initDatabase(bin_size, amp_thresh, max_fingerprint_size):
   q = 0
   s = str(bin_size) + '-' + str(amp_thresh) + '-' + str(max_fingerprint_size) + '.pickle'
@@ -170,7 +181,7 @@ def initDatabase(bin_size, amp_thresh, max_fingerprint_size):
       q += 1
       
 
-
+# loads pickled song database
 def loadDatabase(path):
   with open(path, 'rb') as f:
     #To load from pickle file
